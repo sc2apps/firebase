@@ -1,40 +1,52 @@
 # The Firebase Admin SDK to delete users.
+import asyncio
 from datetime import datetime, timedelta
 
 import google.cloud.firestore
-import pyelo
-import requests
+import httpx
 from firebase_admin import firestore, initialize_app
-from firebase_functions import scheduler_fn
+from firebase_functions import https_fn, scheduler_fn
 from google.cloud.firestore_v1.base_query import FieldFilter
+from utils import get_or_create_teams, handle_match
 
 app = initialize_app()
 
-ELO_MEAN = 2500
-ELO_K = 80
-ELO_RPA = 800
+MOD_IDS = [296214, 340252, 207314]
 
-MOD_IDS = [296214, 340252]
+REQUEST_LIMIT = 80
+REQUEST_WINDOW = 40  # seconds
+
+request_count = 0
+window_start_time = datetime.utcnow()
 
 
-def get_lobbies():
-    checkUntil = datetime.utcnow() - timedelta(hours=2)
-    print('Checking until: ' + checkUntil.strftime('%Y-%m-%d %H:%M:%S'))
-
-    regions = [1, 2, 3, 5]
-
-    # my match # &after=Wzg2MDI3NjMxXQ==
-
+async def fetch_lobbies_for_region(region, checkUntil):
+    global request_count, window_start_time
     lobbies = []
+    after = ''
 
-    for region in regions:
-        after = ''
-        # after = 'Wzg2MTgyMDMxXQ==' # ai games
-        # after = 'Wzg2MDI3NjMxXQ==' # my original game
+    async with httpx.AsyncClient() as client:
         while True:
+            # If we've made 100 requests, wait for the remainder of the 40 seconds
+            if request_count >= REQUEST_LIMIT:
+                elapsed_time = (datetime.utcnow() - window_start_time).seconds
+                if elapsed_time < REQUEST_WINDOW:
+                    await asyncio.sleep(REQUEST_WINDOW - elapsed_time)
+                request_count = 0
+                window_start_time = datetime.utcnow()
+
             url = f"https://sc2arcade.com/api/lobbies/history?regionId={region}&includeMatchResult=true&includeMatchPlayers=true&includeMapInfo=true&includeSlots=true&includeSlotsProfile=true&after={after}"
-            print(f'Loading url: {url}')
-            response = requests.get(url)
+            # print(f'Loading url: {url} request count {request_count}')
+            start_time = datetime.now()
+            try:
+                response = await client.get(url, timeout=5)
+            except Exception as exc:
+                delta = datetime.now() - start_time
+                print(
+                    f"Failed to load url after {delta.seconds} seconds:\n{url}\n{exc}")
+                continue
+            request_count += 1
+
             responseJson = response.json()
 
             results = responseJson['results']
@@ -47,93 +59,35 @@ def get_lobbies():
                 if data['extModBnetId'] in MOD_IDS and data['status'] == 'started':
                     lobbies.append(data)
 
-            print(f'Last created: {lastCreated}')
+            # print(f'Last created: {lastCreated}')
             if lastCreated < checkUntil:
                 break
 
             after = responseJson['page']['next']
+
+    return lobbies
+
+
+async def get_lobbies():
+    checkUntil = datetime.utcnow() - timedelta(hours=1)
+    print('Checking until: ' + checkUntil.strftime('%Y-%m-%d %H:%M:%S'))
+
+    regions = [1, 2, 3]
+
+    # Get lobbies for all regions in parallel
+    all_lobbies = await asyncio.gather(*(fetch_lobbies_for_region(region, checkUntil) for region in regions))
+
+    # Flatten the list of lobbies
+    lobbies = [lobby for region_lobbies in all_lobbies for lobby in region_lobbies]
 
     lobbies.sort(key=lambda x: (
         x['match'] and x['match']['completedAt']) or '')
 
     return lobbies
 
-
-def generate_team_identifier(players):
-    # Extract profile IDs, sort them, and then join them into a string
-    ids = [str(player["profileId"]) for player in players]
-    ids.sort()
-    return "-".join(ids)
-
-
-def generate_team_name(players):
-    names = [str(player["name"]) for player in players]
-    names.sort()
-    return ", ".join(names)
-
-
-def get_or_create_teams(db: google.cloud.firestore.Client, match):
-    # Use the slots to get player profiles
-    teamPlayers = {}
-
-    for slot in match['slots']:
-        if not teamPlayers.get(slot['team']):
-            teamPlayers[slot['team']] = []
-        teamPlayers[slot['team']].append(slot['profile'])
-
-    teams = []
-
-    for t in teamPlayers.keys():
-        players = teamPlayers[t]
-        players = [p for p in players if not p is None]
-
-        # Generate team identifier
-        team_id = generate_team_identifier(players)
-        team_name = generate_team_name(players)
-
-        # Try to get the team from Firestore
-        if not team_id:
-            continue
-        team_ref = db.collection('players').document(team_id)
-        doc = team_ref.get()
-        teamData = {}
-
-        if not doc.exists:
-            # If team doesn't exist, create it
-            teamData = {
-                "identifier": team_id,
-                "name": team_name,
-                "members": [player for player in players],
-                "numGames": 0,
-                "wins": 0,
-                "losses": 0,
-                "draws": 0,
-                "elo": ELO_MEAN,
-                "upsets": 0,
-                "beenUpset": 0,
-                "createdAt": datetime.utcnow().isoformat()[0:23]+'Z',
-            }
-            print(f'Created team with ID: {team_id}')
-            teams.append(teamData)
-        else:
-            print(f'Team with ID: {team_id} already exists.')
-            teams.append(doc.to_dict())
-    return teams
-
-
-def eloPlayerFor(team):
-    player = pyelo.createPlayer(team['identifier'])
-    for key in ['numGames', 'wins', 'losses', 'draws', 'elo', 'upsets', 'beenUpset']:
-        setattr(player, key, team[key])
-    return player
-
-
-def applyEloStatsTo(player, team):
-    for key in ['numGames', 'wins', 'losses', 'draws', 'elo', 'upsets', 'beenUpset']:
-        team[key] = getattr(player, key)
-
-
 # @scheduler_fn.on_schedule(schedule="0 0 29 2 1", timeout_sec=300)
+
+
 def update_match_participants(req):
     db: google.cloud.firestore.Client = firestore.client()
     matches = db.collection('matches').get()
@@ -179,14 +133,10 @@ def update_player_dates(req):
         player.reference.set(saveData, merge=True)
 
 
-@scheduler_fn.on_schedule(schedule="*/5 * * * *", timeout_sec=300)
+@scheduler_fn.on_schedule(schedule="*/5 * * * *", timeout_sec=300, min_instances=0, max_instances=1, concurrency=1, cpu=0.5, preserve_external_changes=True)
 def check_lobbies(event: scheduler_fn.ScheduledEvent) -> None:
-    recent_lobbies = get_lobbies()
+    recent_lobbies = asyncio.run(get_lobbies())
     print(f'Found lobbies {len(recent_lobbies)}')
-
-    pyelo.setMean(ELO_MEAN)
-    pyelo.setK(ELO_K)
-    pyelo.setRPA(ELO_RPA)
 
     db: google.cloud.firestore.Client = firestore.client()
 
@@ -202,60 +152,32 @@ def check_lobbies(event: scheduler_fn.ScheduledEvent) -> None:
 
         if not doc.exists:
             print('New match discovered')
-            teams = get_or_create_teams(db, match)
-            if len(teams) > 2:
-                print('More than two teams')
-                continue
-            if len(teams) < 2:
-                print('Only one player team')
-                continue
+            handle_match(db, match_ref, match)
 
-            firstProfile = match['match']['profileMatches'][0]
-            firstTeamWon = str(
-                firstProfile['profile']['profileId']) in teams[0]['identifier']
-            if firstProfile['decision'] == 'loss':
-                firstTeamWon = not firstTeamWon
+    print("Done processing lobbies")
 
-            winningTeam = teams[0] if firstTeamWon else teams[1]
-            loosingTeam = teams[1] if firstTeamWon else teams[0]
-
-            print(f'{winningTeam["name"]} won against {loosingTeam["name"]}')
-
-            winningEloTeam = eloPlayerFor(winningTeam)
-            loosingEloTeam = eloPlayerFor(loosingTeam)
-
-            wonElo = winningEloTeam.elo
-            lostElo = loosingEloTeam.elo
-            match['winnerMMR'] = winningEloTeam.elo
-            match['looserMMR'] = loosingEloTeam.elo
-
-            pyelo.addGameResults(winningEloTeam, 1, loosingEloTeam, 0, 0, 0, 0)
-
-            wonElo = winningEloTeam.elo - wonElo
-            lostElo = loosingEloTeam.elo - lostElo
-            match['wonElo'] = wonElo
-            match['lostElo'] = lostElo
-            match['participants'] = [
-                winningTeam['identifier'],
-                loosingTeam['identifier'],
-            ]
-            match_ref.set(match)
-
-            applyEloStatsTo(winningEloTeam, winningTeam)
-            applyEloStatsTo(loosingEloTeam, loosingTeam)
-
-            print(
-                f"Saving Players new elos: {winningTeam['name']}-{winningTeam['elo']} and {loosingTeam['name']}-{loosingTeam['elo']}")
-            playersCol = db.collection('players')
-
-            winningTeam['lastMatchAt'] = match['createdAt']
-            loosingTeam['lastMatchAt'] = match['createdAt']
-            playersCol.document(winningTeam['identifier']).set(winningTeam)
-            playersCol.document(loosingTeam['identifier']).set(loosingTeam)
-
-    print("Done")
 # TODO:
 # Support uploading of replays
 # Determine if a match already exists by players and rough time
 # Ensure the replay had the mod
 # Adjust player MMR
+
+
+# @https_fn.on_call()
+# def get_challenges(req: https_fn.CallableRequest) -> any:
+#     db: google.cloud.firestore.Client = firestore.client()
+
+
+# @https_fn.on_call()
+# def migrate(req: https_fn.CallableRequest) -> any:
+#     db: google.cloud.firestore.Client = firestore.client()
+#     players = db.collection("players").get()
+
+#     for player in players:
+#         data = player.data()
+#         if not data['regionId']:
+#             player.set({
+#                 'regionId': data['members']['regionId']
+#             }, merge=True)
+
+#     # req

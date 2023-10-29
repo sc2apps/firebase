@@ -1,12 +1,15 @@
 import json
+import os
 import pprint
+import re
 
 import sc2reader
 
-pp = pprint.PrettyPrinter(indent=2)
+pp = pprint.PrettyPrinter(indent=2, )
 
-replay = sc2reader.load_replay(
-    'replays/Blackburn LE (7).SC2Replay', load_level=2)
+replay_filename = 'replays/Blackburn LE (7).SC2Replay'
+
+replay = sc2reader.load_replay(replay_filename, load_level=2)
 
 pp.pprint(replay)
 # replay.players
@@ -25,11 +28,17 @@ for player in replay.players:
         }
     })
 
+# Get mapname from filename
+
 match = {
     'createdAt': replay.start_time,
+    # closedAt
+    # replay.length exists if we need it
+
     # lostElo, wonElo
     # map
     # mapBnetId
+    'map': replay.map_name,
     'match': {
         'completedAt': replay.end_time,
         'profileMatches': profileMatches
