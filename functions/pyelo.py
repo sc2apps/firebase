@@ -23,12 +23,12 @@ import math
 
 class Elo:
     def __init__(self, mean, k, RPA):
-        self.mean = 1000
-        self.K = 20
-        self.RPA = 400
+        self.mean = mean
+        self.K = k
+        self.RPA = RPA
         self.homeAdvAmt = None
 
-    def addGame(self, teamA, teamAScore, teamB, teamBScore, homeAdvA, homeAdvB, mov):
+    def addGame(self, teamA, teamAScore, teamB, teamBScore, homeAdvA, homeAdvB, mov, teamAMultiplier=1, teamBMultiplier=1):
         ''' 
             homeAdv = a flag that indicates if home advantage is a factor. 1 = home game; -1 = away game; 0 = neutral location
                 Use the function setHomeAdv() to set the amount of additional points expected at a home game 
@@ -101,13 +101,15 @@ class Elo:
         # More positive if you were less likely to win (an upset)
         # More positive if you had a higher margin of victory (scoreDif)
         if mov > 0:
-            teamA.elo = teamA.elo + eloSystem.K * \
+            teamA.elo = teamA.elo + (eloSystem.K * teamAMultiplier) * \
                 (win - expectedScoreA)*math.log(abs(scoreDif)+1)
-            teamB.elo = teamB.elo + eloSystem.K * \
+            teamB.elo = teamB.elo + (eloSystem.K * teamBMultiplier) * \
                 ((1-win) - expectedScoreB)*math.log(abs(scoreDif)+1)
         else:
-            teamA.elo = teamA.elo + eloSystem.K*(win - expectedScoreA)
-            teamB.elo = teamB.elo + eloSystem.K*((1-win) - expectedScoreB)
+            teamA.elo = teamA.elo + \
+                (eloSystem.K * teamAMultiplier)*(win - expectedScoreA)
+            teamB.elo = teamB.elo + \
+                (eloSystem.K * teamBMultiplier)*((1-win) - expectedScoreB)
 
 
 # Setup our default Elo system with some commonly used values
@@ -196,7 +198,7 @@ def getPlayerOdds(teamA, teamB):
     return 100.0 / (1.0 + math.pow(10.0, (teamB.elo-teamA.elo)/eloSystem.RPA))
 
 
-def addGameResults(teamA, teamAScore, teamB, teamBScore, homeAdvA=0, homeAdvB=0, mov=0):
+def addGameResults(teamA, teamAScore, teamB, teamBScore, homeAdvA=0, homeAdvB=0, mov=0, teamAMultiplier=1, teamBMultiplier=1):
     ''' returns: None
         teamA is the class returned from createPlayer()
         teamAScore is the score of team A. In chess, a win is 1, a loss is 0, and a draw is 0.5.
@@ -207,7 +209,7 @@ def addGameResults(teamA, teamAScore, teamB, teamBScore, homeAdvA=0, homeAdvB=0,
             You would use 0 for chess, and probably 1 for games such as basketball, football/soccer, etc.
     '''
     eloSystem.addGame(teamA, teamAScore, teamB,
-                      teamBScore, homeAdvA, homeAdvB, mov)
+                      teamBScore, homeAdvA, homeAdvB, mov, teamAMultiplier, teamBMultiplier)
 
 
 def setHomeAdvAmt(homeAdvAmt):
