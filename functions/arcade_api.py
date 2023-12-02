@@ -26,7 +26,8 @@ async def fetch_lobbies_for_region_mod(region, mod_id, checkUntil):
                 request_count = 0
                 window_start_time = datetime.utcnow()
 
-            url = f"https://sc2arcade.com/api/lobbies/history?regionId={region}&mapId={mod_id}&includeMatchResult=true&includeMatchPlayers=true&includeMapInfo=true&includeSlots=true&includeSlotsProfile=true&after={after}&limit=500"
+            url = f"https://sc2arcade.com/api/lobbies/history?regionId={region}&mapId={mod_id}&includeMatchResult=true&includeMatchPlayers=true&includeMapInfo=true&includeSlots=true&includeSlotsProfile=true&after={after}&limit=100"
+            print(f"Pulling Url: {url}")
 
             start_time = datetime.now()
             try:
@@ -35,11 +36,12 @@ async def fetch_lobbies_for_region_mod(region, mod_id, checkUntil):
                 delta = datetime.now() - start_time
                 print(
                     f"Failed to load url after {delta.seconds} seconds:\n{url}\n{exc}")
-                continue
+                return lobbies
             request_count += 1
 
             responseJson = response.json()
             try:
+                after = responseJson['page']['next']
                 results = responseJson['results']
                 lastResult = results[len(results) - 1]
 
@@ -50,35 +52,13 @@ async def fetch_lobbies_for_region_mod(region, mod_id, checkUntil):
                     if data['status'] == 'started':
                         lobbies.append(data)
 
-                # print(f'Last created: {lastCreated}')
+                print(f'Last created: {lastCreated}')
                 if lastCreated < checkUntil:
                     break
             except Exception as error:
                 print(f"Failed to parse {url}")
                 print(error)
-
-    return lobbies
-
-
-async def get_lobbies(checkUntil):
-    checkUntil = checkUntil or datetime.utcnow() - timedelta(hours=2)
-    print('Checking until: ' + checkUntil.strftime('%Y-%m-%d %H:%M:%S'))
-
-    # Use list comprehension to create tasks for all regions and mods
-
-    tasks = [
-        fetch_lobbies_for_region_mod(region, mod_id, checkUntil)
-        for race, regions in MOD_IDS.items()
-        for region, mod_ids in regions.items()
-        for mod_id in mod_ids
-    ]
-
-    all_lobbies = await asyncio.gather(*tasks)
-
-    # Flatten the list of lobbies
-    lobbies = [lobby for region_lobbies in all_lobbies for lobby in region_lobbies]
-
-    lobbies.sort(key=lambda x: (
-        x['match'] and x['match']['completedAt']) or '')
+            if not after:
+                break
 
     return lobbies

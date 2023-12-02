@@ -8,6 +8,10 @@ firebase-debug.log*
 firebase-debug.*.log*
 service-account.json
 
+handled/
+replays/
+replays_old/
+
 # Firebase cache
 .firebase/
 

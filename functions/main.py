@@ -1,14 +1,11 @@
 # The Firebase Admin SDK to delete users.
 import asyncio
-from datetime import datetime, timedelta
 
-import google.cloud.firestore
-import httpx
-from arcade_api import get_lobbies
+from db import process_matches
 from firebase_admin import firestore, initialize_app
 from firebase_functions import scheduler_fn
 from utils import (MOD_IDS, REQUEST_LIMIT, REQUEST_WINDOW, get_or_create_teams,
-                   handle_match, mod_document, mod_name, store_lobbies)
+                   handle_match, mod_document, mod_name)
 
 app = initialize_app()
 
@@ -64,13 +61,8 @@ app = initialize_app()
 
 @scheduler_fn.on_schedule(schedule="*/5 * * * *", timeout_sec=300, min_instances=0, max_instances=1, concurrency=1, cpu=0.5, preserve_external_changes=True)
 def check_lobbies(event: scheduler_fn.ScheduledEvent) -> None:
-    recent_lobbies = asyncio.run(get_lobbies())
-    print(f'Found lobbies {len(recent_lobbies)}')
-
-    db = firestore.client()
-
-    store_lobbies(db, recent_lobbies)
-    print("Done processing lobbies")
+    recent_lobbies = asyncio.run(process_matches())
+    print("Job Done")
 
 # TODO:
 # Support uploading of replays

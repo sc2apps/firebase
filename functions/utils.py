@@ -1,14 +1,8 @@
-import datetime
 # The Firebase Admin SDK to delete users.
-from datetime import datetime, timedelta
+from datetime import datetime
 
-import google.cloud.firestore
 import pyelo
-import requests
-from firebase_admin import firestore, initialize_app
 from firebase_functions import scheduler_fn
-from google.cloud.firestore_v1.base_collection import DocumentSnapshot
-from google.cloud.firestore_v1.base_query import FieldFilter
 from google.cloud.firestore_v1.collection import CollectionReference
 from google.cloud.firestore_v1.document import DocumentReference
 
@@ -36,6 +30,7 @@ REGION_COLLECTION = "regions"
 RACES_COLLECTION = "races"
 PLAYERS_COLLECTION = "players"
 MATCHES_COLLECTION = "matches"
+LEADERBOARDS_COLLECTION = "leaderboards"
 
 REGION_MAPPING = {
     "na": 1,
@@ -52,11 +47,9 @@ def region_as_number(region):
 
 
 def mod_name(mod_id):
-    mod = mod_id
-
-    for mod in MOD_IDS:
-        for region in mod:
-            for imod_id in region:
+    for mod, regions in MOD_IDS.items():
+        for regionId, mod_ids in regions.items():
+            for imod_id in mod_ids:
                 if imod_id == mod_id:
                     return mod
 
@@ -69,6 +62,7 @@ def mod_document(db, region, mod_name) -> DocumentReference:
         str(region_as_number(region)))
     race_collection: CollectionReference = region_document.collection(
         RACES_COLLECTION)
+    print(f"Mod doc {region} {mod_name}")
     race_document: DocumentReference = race_collection.document(mod_name)
     return race_document
 
@@ -216,8 +210,6 @@ def datetimeFromDBIso(date) -> datetime:
 
 
 def handle_match(db, match_ref, match):
-    init_pyelo()
-
     mod = mod_name(match['extModBnetId'])
 
     mod_doc = mod_document(
@@ -236,12 +228,14 @@ def handle_match(db, match_ref, match):
         return
 
     firstProfile = match['match']['profileMatches'][0]
-    secondProfile = match['match']['profileMatches'][0]
+    secondProfile = match['match']['profileMatches'][1]
 
     # IDk what is reported for ties.  Hopefully this catches it xD
-    tie = (firstProfile['decision'] == 'loss' and firstProfile['decision'] == 'loss') or \
+    tie = (firstProfile['decision'] == 'loss' and secondProfile['decision'] == 'loss') or \
         (firstProfile['decision'] ==
-         'tie' and firstProfile['decision'] == 'tie')
+         'tie' and secondProfile['decision'] == 'tie')
+    if tie:
+        print(f"TIE {tie} {match['id']}")
 
     firstTeamWon = str(
         firstProfile['profile']['profileId']) in teams[0]['identifier']
@@ -252,8 +246,6 @@ def handle_match(db, match_ref, match):
 
     winningTeam = teams[0] if firstTeamWon else teams[1]
     loosingTeam = teams[1] if firstTeamWon else teams[0]
-
-    print(f'{winningTeam["name"]} won against {loosingTeam["name"]}')
 
     winningEloTeam = eloPlayerFor(winningTeam)
     loosingEloTeam = eloPlayerFor(loosingTeam)
@@ -286,38 +278,11 @@ def handle_match(db, match_ref, match):
     applyEloStatsTo(winningEloTeam, winningTeam)
     applyEloStatsTo(loosingEloTeam, loosingTeam)
 
-    print(
-        f"Saving Players new elos: {winningTeam['name']}-{winningTeam['elo']} and {loosingTeam['name']}-{loosingTeam['elo']}")
     playersCol = mod_doc.collection(PLAYERS_COLLECTION)
-
-    # TODO: handle monthly, quarterly, yearly
-    leaderboard_ref = mod_doc.collection('leaderboards').document('2023-10')
-    # leaderboard_ref.set({
-    #     'players': players
-    # })
 
     winningTeam['lastMatchAt'] = match['createdAt']
     loosingTeam['lastMatchAt'] = match['createdAt']
     playersCol.document(winningTeam['identifier']).set(winningTeam)
     playersCol.document(loosingTeam['identifier']).set(loosingTeam)
 
-
-def store_lobbies(db: google.cloud.firestore.Client, lobbies):
-    for match in lobbies:
-        if not match.get('match') or not match['match'].get('completedAt'):
-            continue
-
-        match_ref: DocumentReference = db.collection(MATCHES_COLLECTION) \
-            .document(str(match["bnetRecordId"]))
-        mod_match_ref: DocumentReference = mod_document(
-            db, match['regionId'], mod_name(match['extModBnetId']),
-        ).collection(MATCHES_COLLECTION) \
-            .document(str(match["bnetRecordId"]))
-
-        match_ref.set(match)
-
-        # Save mod match (with MMR/etc)
-        doc: DocumentSnapshot = mod_match_ref.get()
-        if not doc.exists:
-            print('New match discovered')
-            handle_match(db, mod_match_ref, match)
+init_pyelo()
